@@ -1,0 +1,185 @@
+import requests
+import time
+import json
+
+# =========================
+# CONFIGURAÇÕES
+# =========================
+
+TELEGRAM_TOKEN = "seu token telegram"
+FUTODDS_TOKEN = "sua api dados de futebol"
+
+TG_URL = f"https://api.telegram.org/bot{TELEGRAM_TOKEN}"
+FUTODDS_LIVE = (
+    "https://csv.futodds.com/functions/v1/matches-live"
+    f"?api_token={FUTODDS_TOKEN}"
+)
+
+DB_FILE = "football_db.json"
+
+# =========================
+# BANCO SIMPLES
+# =========================
+
+def load_db():
+    try:
+        with open(DB_FILE, "r") as f:
+            return json.load(f)
+    except:
+        return {"last_update_id": 0}
+
+def save_db(db):
+    with open(DB_FILE, "w") as f:
+        json.dump(db, f, indent=4)
+
+# =========================
+# TELEGRAM
+# =========================
+
+def send_message(chat_id, text):
+    requests.post(
+        f"{TG_URL}/sendMessage",
+        json={"chat_id": chat_id, "text": text},
+        timeout=10
+    )
+
+def get_updates(offset):
+    r = requests.get(
+        f"{TG_URL}/getUpdates",
+        params={"offset": offset},
+        timeout=10
+    )
+    return r.json().get("result", [])
+
+# =========================
+# FUTODDS
+# =========================
+
+def get_live_matches():
+    try:
+        r = requests.get(FUTODDS_LIVE, timeout=10)
+        data = r.json()
+
+        if isinstance(data, dict) and "data" in data:
+            return data["data"]
+
+        if isinstance(data, list):
+            return data
+
+        return []
+    except:
+        return []
+
+# =========================
+# EXTRAIR INFO DO JOGO
+# =========================
+
+def extrair_info_jogo(j):
+    # minuto do jogo
+    minuto = j.get("elapsed")
+    if minuto is None:
+        minuto = 0
+
+    # scores pode vir como None
+    scores = j.get("scores")
+    if not isinstance(scores, dict):
+        scores = {}
+
+    # período 2 = tempo regulamentar
+    periodo = scores.get("2")
+    if not isinstance(periodo, dict):
+        periodo = {}
+
+    try:
+        home_goals = int(periodo.get("home", 0))
+        away_goals = int(periodo.get("away", 0))
+    except:
+        home_goals = 0
+        away_goals = 0
+
+    return home_goals, away_goals, int(minuto)
+
+
+# =========================
+# FORMATAR JOGO
+# =========================
+
+def formatar_jogo(j):
+    gh, ga, minuto = extrair_info_jogo(j)
+    return (
+        f"⚽ {j.get('home_name')} {gh}x{ga} {j.get('away_name')}\n"
+        f"🏆 {j.get('competition_name')} ({j.get('competition_country')})\n"
+        f"⏱ {minuto}′"
+    )
+
+# =========================
+# ANÁLISE
+# =========================
+
+def analisar_jogo(j):
+    gh, ga, minuto = extrair_info_jogo(j)
+
+    if minuto >= 20 and gh + ga == 0:
+        return "⚠️ 0x0 após 20′ (possível Lay CS)"
+    if minuto >= 30 and gh + ga == 0:
+        return "🔥 Pressão alta – possível gol"
+    if minuto >= 45:
+        return "⏸ Intervalo próximo (HT)"
+
+    return None
+
+# =========================
+# BOT LOOP
+# =========================
+
+def main():
+    print("⚽ Bot de Futebol iniciado...")
+    db = load_db()
+
+    while True:
+        updates = get_updates(db["last_update_id"] + 1)
+
+        for u in updates:
+            db["last_update_id"] = u["update_id"]
+            msg = u["message"].get("text", "")
+            chat_id = u["message"]["chat"]["id"]
+
+            if msg == "/start":
+                send_message(
+                    chat_id,
+                    "⚽ BOT DE ANÁLISE DE FUTEBOL\n\n"
+                    "/live – Jogos ao vivo\n"
+                    "/sinais – Alertas automáticos"
+                )
+
+            elif msg == "/live":
+                jogos = get_live_matches()
+                if not jogos:
+                    send_message(chat_id, "❌ Nenhum jogo ao vivo.")
+                else:
+                    texto = "📡 JOGOS AO VIVO\n\n"
+                    for j in jogos[:50]:
+                        texto += formatar_jogo(j) + "\n\n"
+                    send_message(chat_id, texto)
+
+            elif msg == "/sinais":
+                jogos = get_live_matches()
+                sinais = []
+
+                for j in jogos:
+                    alerta = analisar_jogo(j)
+                    if alerta:
+                        sinais.append(formatar_jogo(j) + f"\n{alerta}\n")
+
+                if sinais:
+                    send_message(chat_id, "🚨 SINAIS\n\n" + "\n".join(sinais))
+                else:
+                    send_message(chat_id, "❌ Nenhum sinal no momento.")
+
+        save_db(db)
+        time.sleep(2)
+
+if __name__ == "__main__":
+    main()
+
+print(f"Found {len(data['data'])} correct scores")
